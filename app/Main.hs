@@ -4,17 +4,19 @@
 module Main where
 
 import Configuration.Dotenv (defaultConfig, loadFile)
-import Control.Concurrent (threadDelay)
+import Control.Applicative (liftA2)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Lens
-import Control.Monad (when)
+import Control.Monad (forever, void, when)
 import Control.Monad.Reader (ReaderT)
 import Data.Aeson (fromJSON, parseJSON, withObject, (.:))
 import Data.Aeson.Lens (key, nth)
 import qualified Data.ByteString as B
 import Data.ByteString.Lazy.Internal (ByteString)
 import Data.Maybe (fromJust)
-import Data.Text (Text, isPrefixOf, pack, toLower)
+import Data.Text (Text, isPrefixOf, isSuffixOf, pack, toLower, unpack)
 import qualified Data.Text.IO as TIO
+import Debug.Trace
 import Discord
 import qualified Discord.Requests as R
 import Discord.Types
@@ -22,32 +24,40 @@ import qualified Network.Wreq as W
 import System.Environment (getEnv)
 import UnliftIO
 
-newtype ResponseUrl = ResponseUrl Text
+newtype ResponseUrl = ResponseUrl Text deriving (Show)
 
 main :: IO ()
 main = do
   loadFile defaultConfig
   token <- getEnv "BOT_TOKEN"
-  api <- getEnv "GIPHY_API"
+  outChan <- newChan :: IO (Chan String)
+
+  -- Events are processed in new threads, but stdout isn't
+  -- synchronized. We get ugly output when multiple threads
+  -- write to stdout at the same time
+  threadId <- forkIO $ forever $ readChan outChan >>= putStrLn
+
   userFacingError <-
     runDiscord $
       def
         { discordToken = pack token,
-          discordOnEvent = eventHandler,
+          discordOnEvent = eventHandler outChan,
           discordOnLog = logger
         }
   TIO.putStrLn userFacingError
 
 logger :: Text -> IO ()
 logger txt = do
-  print txt
+  pure $ trace "tracing::: " $ unpack txt
   pure ()
 
-eventHandler :: Event -> DiscordHandler ()
-eventHandler event = case event of
-  MessageCreate m -> handleMessages m
-  GuildBanAdd id usr -> pure ()
-  _ -> pure ()
+eventHandler :: Chan String -> Event -> DiscordHandler ()
+eventHandler out event = do
+  liftIO $ writeChan out (show event <> "\n")
+  case event of
+    MessageCreate m -> handleMessages m
+    GuildBanAdd id usr -> pure ()
+    _ -> pure ()
 
 createBan :: Either a Guild -> Either a User -> R.CreateGuildBanOpts -> R.GuildRequest ()
 createBan (Right (Guild {guildId = guildId})) (Right (User {userId = userId})) = R.CreateGuildBan guildId userId
@@ -65,10 +75,13 @@ fromBot :: Message -> Bool
 fromBot m = userIsBot (messageAuthor m)
 
 isBan :: Text -> Bool
-isBan = ("ban" `isPrefixOf`) . toLower
+isBan = ("ban" `isSuffixOf`) . toLower
 
 isMeme :: Text -> Bool
-isMeme = ("meme" `isPrefixOf`) . toLower
+isMeme = ("meme" `isSuffixOf`) . toLower
+
+isPrefix :: Text -> Bool
+isPrefix = ("!" `isPrefixOf`)
 
 getMemeApi :: IO String
 getMemeApi = getEnv "GIPHY_API"
@@ -77,7 +90,7 @@ api :: IO String
 api = getEnv "GIPHY_API"
 
 getMeme :: IO (W.Response ResponseUrl)
-getMeme = W.asJSON =<< (api >>= (\api -> W.get api))
+getMeme = api >>= W.get >>= W.asJSON
 
 instance FromJSON ResponseUrl where
   parseJSON =
@@ -89,18 +102,18 @@ instance FromJSON ResponseUrl where
 createMessage :: Message -> ResponseUrl -> R.ChannelRequest Message
 createMessage msg ((ResponseUrl (url))) = R.CreateMessage (messageId msg) url
 
+getUserIdFromMentions :: Message -> UserId
+getUserIdFromMentions = (userId . head . messageMentions)
+
 handleMessages :: Message -> ReaderT DiscordHandle IO ()
 handleMessages msg
   | (not $ fromBot msg && (isMeme . messageText) msg) = do
-    giphy <- pure $ getMeme
-    url <- pure giphy
-    pure $ (\r -> (createMessage msg (r ^. W.responseBody))) <$> url
+    pure $ (\r -> createMessage msg $ r ^. W.responseBody) <$> getMeme
     pure ()
   | not $ (fromBot msg) && (isBan . messageText) msg = do
-    guild <- restCall (R.GetGuild (getGuild msg))
-    user <- restCall (R.GetUser (userId $ head $ messageMentions msg)) -- head is not safe.
+    guild <- restCall $ R.GetGuild $ getGuild msg
+    user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
     pure $ threadDelay (4 * 10 ^ 6)
     _ <- pure $ createBan guild user createGuildBanOpts
     pure ()
   | otherwise = pure ()
-
