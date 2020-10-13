@@ -1,5 +1,6 @@
 -- allows "string literals" to be Text
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -7,8 +8,9 @@ import Configuration.Dotenv (defaultConfig, loadFile)
 import Control.Applicative (liftA2)
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Lens
-import Control.Monad (forever, void, when)
-import Control.Monad.Reader (ReaderT)
+import Control.Monad (forever, liftM, void, when)
+import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
+import Control.Monad.Trans (lift)
 import Data.Aeson (fromJSON, parseJSON, withObject, (.:))
 import Data.Aeson.Lens (key, nth)
 import qualified Data.ByteString as B
@@ -25,6 +27,13 @@ import System.Environment (getEnv)
 import UnliftIO
 
 newtype ResponseUrl = ResponseUrl Text deriving (Show)
+
+instance FromJSON ResponseUrl where
+  parseJSON =
+    withObject "ResponseUrl" $ \v -> do
+      theData <- v .: "data"
+      url <- theData .: "url"
+      pure $ ResponseUrl url
 
 main :: IO ()
 main = do
@@ -59,6 +68,32 @@ eventHandler out event = do
     GuildBanAdd id usr -> pure ()
     _ -> pure ()
 
+-- utils
+fromBot :: Message -> Bool
+fromBot m = userIsBot (messageAuthor m)
+
+isBan :: Text -> Bool
+isBan = ("ban" `isSuffixOf`) . toLower
+
+isMeme :: Text -> Bool
+isMeme = ("meme" `isSuffixOf`) . toLower
+
+isPrefix :: Message -> Bool
+isPrefix = ("!" `isPrefixOf`) . messageText
+
+getMemeApi :: IO String
+getMemeApi = getEnv "GIPHY_API"
+
+api :: IO String
+api = getEnv "GIPHY_API"
+
+getUserIdFromMentions :: Message -> UserId
+getUserIdFromMentions = (userId . head . messageMentions)
+
+getMeme :: IO (W.Response ResponseUrl)
+getMeme = api >>= W.get >>= W.asJSON
+
+--
 createBan :: Either a Guild -> Either a User -> R.CreateGuildBanOpts -> R.GuildRequest ()
 createBan (Right (Guild {guildId = guildId})) (Right (User {userId = userId})) = R.CreateGuildBan guildId userId
 createBan _ _ = R.CreateGuildBan (Snowflake 0) (Snowflake 0)
@@ -71,49 +106,25 @@ getGuild message = case messageGuild message of
 createGuildBanOpts :: R.CreateGuildBanOpts
 createGuildBanOpts = R.CreateGuildBanOpts (Just 0) (Just (pack "Dubbz said so"))
 
-fromBot :: Message -> Bool
-fromBot m = userIsBot (messageAuthor m)
+createMessage :: Message -> ResponseUrl -> DiscordHandler (Either RestCallErrorCode Message)
+createMessage msg (ResponseUrl (url)) = restCall $ R.CreateMessage (messageChannel msg) url
 
-isBan :: Text -> Bool
-isBan = ("ban" `isSuffixOf`) . toLower
+handleIOMeme :: Message -> DiscordHandler (Either RestCallErrorCode Message)
+handleIOMeme msg = lift getMeme >>= (\a -> createMessage msg (a ^. W.responseBody))
 
-isMeme :: Text -> Bool
-isMeme = ("meme" `isSuffixOf`) . toLower
+callPong :: Message -> DiscordHandler (Either RestCallErrorCode Message)
+callPong msg = restCall (R.CreateMessage (messageChannel msg) "Pong!")
 
-isPrefix :: Text -> Bool
-isPrefix = ("!" `isPrefixOf`)
-
-getMemeApi :: IO String
-getMemeApi = getEnv "GIPHY_API"
-
-api :: IO String
-api = getEnv "GIPHY_API"
-
-getMeme :: IO (W.Response ResponseUrl)
-getMeme = api >>= W.get >>= W.asJSON
-
-instance FromJSON ResponseUrl where
-  parseJSON =
-    withObject "ResponseUrl" $ \v -> do
-      theData <- v .: "data"
-      url <- theData .: "url"
-      pure $ ResponseUrl url
-
-createMessage :: Message -> ResponseUrl -> R.ChannelRequest Message
-createMessage msg ((ResponseUrl (url))) = R.CreateMessage (messageId msg) url
-
-getUserIdFromMentions :: Message -> UserId
-getUserIdFromMentions = (userId . head . messageMentions)
-
-handleMessages :: Message -> ReaderT DiscordHandle IO ()
+handleMessages :: Message -> DiscordHandler ()
 handleMessages msg
-  | (not $ fromBot msg && (isMeme . messageText) msg) = do
-    pure $ (\r -> createMessage msg $ r ^. W.responseBody) <$> getMeme
+  | isPrefix msg && (not . fromBot) msg && (isMeme . messageText) msg = do
+    handleIOMeme msg
     pure ()
-  | not $ (fromBot msg) && (isBan . messageText) msg = do
+  | isPrefix msg && (not . fromBot) msg && (isBan . messageText) msg = do
     guild <- restCall $ R.GetGuild $ getGuild msg
     user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
-    pure $ threadDelay (4 * 10 ^ 6)
-    _ <- pure $ createBan guild user createGuildBanOpts
+    restCall $ createBan guild user createGuildBanOpts
     pure ()
-  | otherwise = pure ()
+  | otherwise = do
+    pure $ putStrLn "here "
+    pure ()
