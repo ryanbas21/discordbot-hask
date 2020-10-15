@@ -16,7 +16,7 @@ import Data.Aeson.Lens (key, nth)
 import qualified Data.ByteString as B
 import Data.ByteString.Lazy.Internal (ByteString)
 import Data.Maybe (fromJust)
-import Data.Text (Text, isPrefixOf, isSuffixOf, pack, toLower, unpack)
+import Data.Text (Text, append, isPrefixOf, isSuffixOf, pack, tail, takeWhile, takeWhileEnd, toLower, unpack)
 import qualified Data.Text.IO as TIO
 import Debug.Trace
 import Discord
@@ -38,7 +38,7 @@ instance FromJSON ResponseUrl where
 main :: IO ()
 main = do
   loadFile defaultConfig
-  token <- getEnv "BOT_TOKEN"
+  token <- getEnv "LEAGUE_TOKEN"
   outChan <- newChan :: IO (Chan String)
 
   -- Events are processed in new threads, but stdout isn't
@@ -70,16 +70,25 @@ eventHandler out event = do
 
 -- utils
 fromBot :: Message -> Bool
-fromBot m = userIsBot (messageAuthor m)
+fromBot = (userIsBot . messageAuthor)
 
 isBan :: Text -> Bool
-isBan = ("ban" `isSuffixOf`) . toLower
+isBan str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "ban"
+
+getTextAfterCommand :: Text -> Text
+getTextAfterCommand = Data.Text.takeWhileEnd ((/=) ' ')
 
 isMeme :: Text -> Bool
 isMeme = ("meme" `isSuffixOf`) . toLower
 
+rokers :: Message -> Bool
+rokers = (("rokers" `isSuffixOf`) . toLower . messageText)
+
 isPrefix :: Message -> Bool
 isPrefix = ("!" `isPrefixOf`) . messageText
+
+minion :: Message -> Bool
+minion = (("minion" `isSuffixOf`) . toLower . messageText)
 
 getMemeApi :: IO String
 getMemeApi = getEnv "GIPHY_API"
@@ -88,7 +97,9 @@ api :: IO String
 api = getEnv "GIPHY_API"
 
 getUserIdFromMentions :: Message -> UserId
-getUserIdFromMentions = (userId . head . messageMentions)
+getUserIdFromMentions msg = case (length $ messageMentions msg) > 0 of
+  True -> (userId . head . messageMentions) msg
+  False -> Snowflake 0
 
 getMeme :: IO (W.Response ResponseUrl)
 getMeme = api >>= W.get >>= W.asJSON
@@ -98,13 +109,14 @@ createBan :: Either a Guild -> Either a User -> R.CreateGuildBanOpts -> R.GuildR
 createBan (Right (Guild {guildId = guildId})) (Right (User {userId = userId})) = R.CreateGuildBan guildId userId
 createBan _ _ = R.CreateGuildBan (Snowflake 0) (Snowflake 0)
 
-getGuild :: Message -> GuildId
-getGuild message = case messageGuild message of
+getGuildId :: Message -> GuildId
+getGuildId message = case messageGuild message of
   Just id -> id
   Nothing -> fromInteger 0
 
-createGuildBanOpts :: R.CreateGuildBanOpts
-createGuildBanOpts = R.CreateGuildBanOpts (Just 0) (Just (pack "Dubbz said so"))
+createGuildBanOpts :: Either RestCallErrorCode User -> R.CreateGuildBanOpts
+createGuildBanOpts (Right user) = R.CreateGuildBanOpts Nothing (Just (append (pack "Banned ") (userName user)))
+createGuildBanOpts (Left err) = R.CreateGuildBanOpts Nothing (Just (append (pack "Error ") ("No username")))
 
 createMessage :: Message -> ResponseUrl -> DiscordHandler (Either RestCallErrorCode Message)
 createMessage msg (ResponseUrl (url)) = restCall $ R.CreateMessage (messageChannel msg) url
@@ -117,13 +129,23 @@ callPong msg = restCall (R.CreateMessage (messageChannel msg) "Pong!")
 
 handleMessages :: Message -> DiscordHandler ()
 handleMessages msg
+  | (not $ fromBot msg) && (isPrefix msg) && minion msg = do
+    restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/j0He7b6"
+    pure ()
+  | (not $ fromBot msg) && (isPrefix msg) && (rokers msg) = do
+    restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/JiQMASG"
+    pure ()
+  | ((messageText msg) == (pack "pong")) = do
+    restCall $ R.CreateMessage (messageChannel msg) "Ping"
+    pure ()
   | isPrefix msg && (not . fromBot) msg && (isMeme . messageText) msg = do
     handleIOMeme msg
     pure ()
   | isPrefix msg && (not . fromBot) msg && (isBan . messageText) msg = do
-    guild <- restCall $ R.GetGuild $ getGuild msg
+    guild <- restCall $ R.GetGuild $ getGuildId msg
     user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
-    restCall $ createBan guild user createGuildBanOpts
+    restCall $ R.CreateMessage (messageChannel msg) "here"
+    restCall $ createBan guild user (createGuildBanOpts user)
     pure ()
   | otherwise = do
     pure $ putStrLn "here "
