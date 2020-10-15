@@ -72,8 +72,17 @@ eventHandler out event = do
 fromBot :: Message -> Bool
 fromBot = (userIsBot . messageAuthor)
 
+isVanity :: Text -> Bool
+isVanity = isSuffixOf ("vanity")
+
+isUnban :: Text -> Bool
+isUnban str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "unban"
+
 isBan :: Text -> Bool
 isBan str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "ban"
+
+isKick :: Text -> Bool
+isKick str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "kick"
 
 getTextAfterCommand :: Text -> Text
 getTextAfterCommand = Data.Text.takeWhileEnd ((/=) ' ')
@@ -146,6 +155,15 @@ handleMessages msg
     user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
     restCall $ R.CreateMessage (messageChannel msg) "here"
     restCall $ createBan guild user (createGuildBanOpts user)
+    pure ()
+  | isPrefix msg && (not . fromBot) msg && (isVanity . messageText) msg = do
+    restCall $ R.GetGuildVanityURL (getGuildId msg)
+    pure ()
+  | isPrefix msg && (not . fromBot) msg && (isKick . messageText) msg = do
+    restCall $ R.RemoveGuildMember (getGuildId msg) (getUserIdFromMentions msg)
+    pure ()
+  | isPrefix msg && (not . fromBot) msg && (isUnban . messageText) msg = do
+    restCall $ R.RemoveGuildBan (getGuildId msg) (getUserIdFromMentions msg)
     pure ()
   | otherwise = do
     pure $ putStrLn "here "
