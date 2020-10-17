@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 --
--- hash: b05cacb5e3360e75970fa930fb4800497eed18abe45f4635527e1c9de45bac76
+-- hash: e99bc2eb80887825cd08774f4992f0ea1d7d3a777be8a239179b823776dbcb1b
 
 name:           discordbot
 version:        0.1.0.0
@@ -40,6 +40,7 @@ library
     , containers
     , discord-haskell
     , dotenv
+    , http-client
     , http-types
     , lens
     , lens-aeson
@@ -70,6 +71,7 @@ executable discordbot-exe
     , discord-haskell
     , discordbot
     , dotenv
+    , http-client
     , http-types
     , lens
     , lens-aeson
@@ -100,6 +102,7 @@ test-suite discordbot-test
     , discord-haskell
     , discordbot
     , dotenv
+    , http-client
     , http-types
     , lens
     , lens-aeson

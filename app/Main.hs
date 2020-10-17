@@ -5,17 +5,11 @@
 module Main where
 
 import Configuration.Dotenv (defaultConfig, loadFile)
-import Control.Applicative (liftA2)
-import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent (forkIO)
+import Control.Monad (forever)
 import Control.Lens
-import Control.Monad (forever, liftM, void, when)
-import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
 import Control.Monad.Trans (lift)
-import Data.Aeson (fromJSON, parseJSON, withObject, (.:))
-import Data.Aeson.Lens (key, nth)
-import qualified Data.ByteString as B
-import Data.ByteString.Lazy.Internal (ByteString)
-import Data.Maybe (fromJust)
+import Data.Aeson (parseJSON, withObject, (.:))
 import Data.Text (Text, append, isPrefixOf, isSuffixOf, pack, tail, takeWhile, takeWhileEnd, toLower, unpack)
 import qualified Data.Text.IO as TIO
 import Debug.Trace
@@ -45,7 +39,7 @@ main = do
   -- Events are processed in new threads, but stdout isn't
   -- synchronized. We get ugly output when multiple threads
   -- write to stdout at the same time
-  threadId <- forkIO $ forever $ readChan outChan >>= putStrLn
+  forkIO $ forever $ readChan outChan >>= putStrLn
   twitter
   userFacingError <-
     runDiscord $
@@ -66,7 +60,7 @@ eventHandler out event = do
   liftIO $ writeChan out (show event <> "\n")
   case event of
     MessageCreate m -> handleMessages m
-    GuildBanAdd id usr -> pure ()
+    GuildBanAdd _ _ -> pure ()
     _ -> pure ()
 
 -- utils
@@ -126,7 +120,7 @@ getGuildId message = case messageGuild message of
 
 createGuildBanOpts :: Either RestCallErrorCode User -> R.CreateGuildBanOpts
 createGuildBanOpts (Right user) = R.CreateGuildBanOpts Nothing (Just (append (pack "Banned ") (userName user)))
-createGuildBanOpts (Left err) = R.CreateGuildBanOpts Nothing (Just (append (pack "Error ") ("No username")))
+createGuildBanOpts (Left _) = R.CreateGuildBanOpts Nothing (Just (append (pack "Error ") ("No username")))
 
 createMessage :: Message -> ResponseUrl -> DiscordHandler (Either RestCallErrorCode Message)
 createMessage msg (ResponseUrl (url)) = restCall $ R.CreateMessage (messageChannel msg) url
