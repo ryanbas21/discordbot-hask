@@ -25,6 +25,22 @@ dependencies:
 - mtl
 - unliftio
 - transformers
+- twitter-conduit
+- bytestring
+- lens
+- aeson >= 1.4.7.1
+- wreq 
+- discord-haskell
+- dotenv
+- lens-aeson
+- unliftio
+- mtl
+- lens-aeson
+- twitter-types-lens
+- twitter-types
+- containers
+- http-types
+- authenticate-oauth
 
 library:
   source-dirs: src

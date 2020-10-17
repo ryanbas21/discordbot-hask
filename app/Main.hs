@@ -24,6 +24,7 @@ import qualified Discord.Requests as R
 import Discord.Types
 import qualified Network.Wreq as W
 import System.Environment (getEnv)
+import Twitter
 import UnliftIO
 
 newtype ResponseUrl = ResponseUrl Text deriving (Show)
@@ -45,7 +46,7 @@ main = do
   -- synchronized. We get ugly output when multiple threads
   -- write to stdout at the same time
   threadId <- forkIO $ forever $ readChan outChan >>= putStrLn
-
+  twitter
   userFacingError <-
     runDiscord $
       def
