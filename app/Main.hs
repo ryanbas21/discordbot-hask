@@ -1,15 +1,16 @@
--- allows "string literals" to be Text
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
 import Configuration.Dotenv (defaultConfig, loadFile)
+import Control.Applicative (liftA2)
 import Control.Concurrent (forkIO)
-import Control.Monad (forever)
 import Control.Lens
+import Control.Monad (forever)
 import Control.Monad.Trans (lift)
 import Data.Aeson (parseJSON, withObject, (.:))
+import Data.Monoid (All (..), getAll)
 import Data.Text (Text, append, isPrefixOf, isSuffixOf, pack, tail, takeWhile, takeWhileEnd, toLower, unpack)
 import qualified Data.Text.IO as TIO
 import Debug.Trace
@@ -131,33 +132,35 @@ handleIOMeme msg = lift getMeme >>= (\a -> createMessage msg (a ^. W.responseBod
 callPong :: Message -> DiscordHandler (Either RestCallErrorCode Message)
 callPong msg = restCall (R.CreateMessage (messageChannel msg) "Pong!")
 
+notBotAndHasPrefix :: Message -> (Message -> Bool) -> Bool
+notBotAndHasPrefix msg fn = getAll $ (All $ not $ fromBot msg) <> (All $ isPrefix msg) <> (All $ fn msg)
+
 handleMessages :: Message -> DiscordHandler ()
 handleMessages msg
-  | (not $ fromBot msg) && (isPrefix msg) && minion msg = do
+  | notBotAndHasPrefix msg minion = do
     restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/j0He7b6"
     pure ()
-  | (not $ fromBot msg) && (isPrefix msg) && (rokers msg) = do
+  | notBotAndHasPrefix msg rokers = do
     restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/JiQMASG"
     pure ()
   | ((messageText msg) == (pack "pong")) = do
     restCall $ R.CreateMessage (messageChannel msg) "Ping"
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isMeme . messageText) msg = do
+  | notBotAndHasPrefix msg (isMeme . messageText) = do
     handleIOMeme msg
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isBan . messageText) msg = do
+  | notBotAndHasPrefix msg (isBan . messageText) = do
     guild <- restCall $ R.GetGuild $ getGuildId msg
     user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
-    restCall $ R.CreateMessage (messageChannel msg) "here"
     restCall $ createBan guild user (createGuildBanOpts user)
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isVanity . messageText) msg = do
+  | notBotAndHasPrefix msg (isVanity . messageText) = do
     restCall $ R.GetGuildVanityURL (getGuildId msg)
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isKick . messageText) msg = do
+  | notBotAndHasPrefix msg (isKick . messageText) = do
     restCall $ R.RemoveGuildMember (getGuildId msg) (getUserIdFromMentions msg)
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isUnban . messageText) msg = do
+  | notBotAndHasPrefix msg (isUnban . messageText) = do
     restCall $ R.RemoveGuildBan (getGuildId msg) (getUserIdFromMentions msg)
     pure ()
   | otherwise = do
