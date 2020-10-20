@@ -1,4 +1,3 @@
--- allows "string literals" to be Text
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -6,16 +5,12 @@ module Main where
 
 import Configuration.Dotenv (defaultConfig, loadFile)
 import Control.Applicative (liftA2)
-import Control.Concurrent (forkIO, killThread, threadDelay)
+import Control.Concurrent (forkIO)
 import Control.Lens
-import Control.Monad (forever, liftM, void, when)
-import Control.Monad.Reader (ReaderT, ask, asks, runReaderT)
+import Control.Monad (forever)
 import Control.Monad.Trans (lift)
-import Data.Aeson (fromJSON, parseJSON, withObject, (.:))
-import Data.Aeson.Lens (key, nth)
-import qualified Data.ByteString as B
-import Data.ByteString.Lazy.Internal (ByteString)
-import Data.Maybe (fromJust)
+import Data.Aeson (parseJSON, withObject, (.:))
+import Data.Monoid (All (..), getAll)
 import Data.Text (Text, append, isPrefixOf, isSuffixOf, pack, tail, takeWhile, takeWhileEnd, toLower, unpack)
 import qualified Data.Text.IO as TIO
 import Debug.Trace
@@ -24,6 +19,7 @@ import qualified Discord.Requests as R
 import Discord.Types
 import qualified Network.Wreq as W
 import System.Environment (getEnv)
+import Twitter
 import UnliftIO
 
 newtype ResponseUrl = ResponseUrl Text deriving (Show)
@@ -44,8 +40,8 @@ main = do
   -- Events are processed in new threads, but stdout isn't
   -- synchronized. We get ugly output when multiple threads
   -- write to stdout at the same time
-  threadId <- forkIO $ forever $ readChan outChan >>= putStrLn
-
+  forkIO $ forever $ readChan outChan >>= putStrLn
+  twitter
   userFacingError <-
     runDiscord $
       def
@@ -65,15 +61,24 @@ eventHandler out event = do
   liftIO $ writeChan out (show event <> "\n")
   case event of
     MessageCreate m -> handleMessages m
-    GuildBanAdd id usr -> pure ()
+    GuildBanAdd _ _ -> pure ()
     _ -> pure ()
 
 -- utils
 fromBot :: Message -> Bool
 fromBot = (userIsBot . messageAuthor)
 
+isVanity :: Text -> Bool
+isVanity = isSuffixOf ("vanity")
+
+isUnban :: Text -> Bool
+isUnban str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "unban"
+
 isBan :: Text -> Bool
 isBan str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "ban"
+
+isKick :: Text -> Bool
+isKick str = Data.Text.takeWhile ((/=) ' ') (Data.Text.tail str) == pack "kick"
 
 getTextAfterCommand :: Text -> Text
 getTextAfterCommand = Data.Text.takeWhileEnd ((/=) ' ')
@@ -116,7 +121,7 @@ getGuildId message = case messageGuild message of
 
 createGuildBanOpts :: Either RestCallErrorCode User -> R.CreateGuildBanOpts
 createGuildBanOpts (Right user) = R.CreateGuildBanOpts Nothing (Just (append (pack "Banned ") (userName user)))
-createGuildBanOpts (Left err) = R.CreateGuildBanOpts Nothing (Just (append (pack "Error ") ("No username")))
+createGuildBanOpts (Left _) = R.CreateGuildBanOpts Nothing (Just (append (pack "Error ") ("No username")))
 
 createMessage :: Message -> ResponseUrl -> DiscordHandler (Either RestCallErrorCode Message)
 createMessage msg (ResponseUrl (url)) = restCall $ R.CreateMessage (messageChannel msg) url
@@ -127,25 +132,36 @@ handleIOMeme msg = lift getMeme >>= (\a -> createMessage msg (a ^. W.responseBod
 callPong :: Message -> DiscordHandler (Either RestCallErrorCode Message)
 callPong msg = restCall (R.CreateMessage (messageChannel msg) "Pong!")
 
+notBotAndHasPrefix :: Message -> (Message -> Bool) -> Bool
+notBotAndHasPrefix msg fn = getAll $ (All $ not $ fromBot msg) <> (All $ isPrefix msg) <> (All $ fn msg)
+
 handleMessages :: Message -> DiscordHandler ()
 handleMessages msg
-  | (not $ fromBot msg) && (isPrefix msg) && minion msg = do
+  | notBotAndHasPrefix msg minion = do
     restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/j0He7b6"
     pure ()
-  | (not $ fromBot msg) && (isPrefix msg) && (rokers msg) = do
+  | notBotAndHasPrefix msg rokers = do
     restCall $ R.CreateMessage (messageChannel msg) "https://imgur.com/JiQMASG"
     pure ()
   | ((messageText msg) == (pack "pong")) = do
     restCall $ R.CreateMessage (messageChannel msg) "Ping"
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isMeme . messageText) msg = do
+  | notBotAndHasPrefix msg (isMeme . messageText) = do
     handleIOMeme msg
     pure ()
-  | isPrefix msg && (not . fromBot) msg && (isBan . messageText) msg = do
+  | notBotAndHasPrefix msg (isBan . messageText) = do
     guild <- restCall $ R.GetGuild $ getGuildId msg
     user <- restCall $ R.GetUser $ getUserIdFromMentions msg -- head is not safe.
-    restCall $ R.CreateMessage (messageChannel msg) "here"
     restCall $ createBan guild user (createGuildBanOpts user)
+    pure ()
+  | notBotAndHasPrefix msg (isVanity . messageText) = do
+    restCall $ R.GetGuildVanityURL (getGuildId msg)
+    pure ()
+  | notBotAndHasPrefix msg (isKick . messageText) = do
+    restCall $ R.RemoveGuildMember (getGuildId msg) (getUserIdFromMentions msg)
+    pure ()
+  | notBotAndHasPrefix msg (isUnban . messageText) = do
+    restCall $ R.RemoveGuildBan (getGuildId msg) (getUserIdFromMentions msg)
     pure ()
   | otherwise = do
     pure $ putStrLn "here "
